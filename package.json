@@ -1,0 +1,19 @@
+{
+  "name": "com.squalive.networking",
+  "displayName": "Squalive Networking",
+  "version": "0.0.1",
+  "unity": "2022.2",
+  "unityRelease": "0a18",
+  "description": "Squalive-Studios official networking solution based on unity transport",
+  "dependencies": {
+    "com.unity.transport": "2.2.1"
+  },
+  "_upm": {
+    "changelog": ""
+  },
+  "repository": {
+    "url": "https://github.com/Squalive/SqualiveNetworking.git",
+    "type": "git",
+    "revision": ""
+  }
+}

@@ -8,9 +8,11 @@ using Unity.Burst;
 
 namespace SqualiveNetworking.Utils
 {
-    public struct PortableFunctionPointer<T> where T : Delegate
+    public readonly struct PortableFunctionPointer<T> where T : Delegate
     {
         internal readonly FunctionPointer<T> Ptr;
+
+        internal bool IsCreated => Ptr.IsCreated;
         
         public PortableFunctionPointer( T executeDelegate )
         {

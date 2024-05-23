@@ -19,7 +19,14 @@ using DataStreamWriter = Unity.Collections.DataStreamWriter;
 
 namespace SqualiveNetworking
 {
-    public delegate void ServerClientConnectedCallback( ref NetworkDriver driver, ref NetworkConnection networkConnection );
+    public struct ServerClientConnectedArgs
+    {
+        public NetworkDriver Driver;
+
+        public NetworkConnection Connection;
+    }
+    
+    public delegate void ServerClientConnectedCallback( ref ServerClientConnectedArgs args );
     
     public static class NetworkServer
     {
@@ -86,6 +93,10 @@ namespace SqualiveNetworking
             _unreliablePipeline = _driver.CreatePipeline( typeof( UnreliableSequencedPipelineStage ) );
 
             _driver.Listen();
+            
+            NetworkServerEvent.Initialize();
+
+            Debug.Log( $"[SERVER]: Start on port: {port}" );
         }
 
         public static void Stop()
@@ -99,6 +110,8 @@ namespace SqualiveNetworking
             
             _driver.Dispose();
             _connections.Dispose();
+            
+            NetworkServerEvent.DeInitialize();
 
             Debug.Log( "[SERVER]: Disposing server...." );
         }
@@ -109,12 +122,15 @@ namespace SqualiveNetworking
                 return;
             
             _serverJobHandle.Complete();
+            
+            NetworkServerEvent.ProcessEvents();
 
             var connectionJob = new ServerUpdateConnectionJob
             {
                 Driver = _driver,
                 Connections = _connections,
                 ClientConnectedCallback = _clientConnectedPtr,
+                ClientConnectedWriter = NetworkServerEvent.GetClientConnectedWriter(),
             };
 
             var updateJob = new ServerUpdateJob
@@ -183,6 +199,8 @@ namespace SqualiveNetworking
             public NativeList<NetworkConnection> Connections;
 
             public PortableFunctionPointer<ServerClientConnectedCallback> ClientConnectedCallback;
+
+            public NativeQueue<ServerClientConnectedArgs>.ParallelWriter ClientConnectedWriter;
             
             public void Execute()
             {
@@ -208,7 +226,18 @@ namespace SqualiveNetworking
                     Debug.Log( $"[SERVER]: Accepting New Connection From: {endPoint.ToFixedString()}" );
 #endif
                     // Trigger client connected here
-                    ClientConnectedCallback.Ptr.Invoke( ref Driver, ref connection );
+                    var args = new ServerClientConnectedArgs
+                    {
+                        Driver = Driver,
+                        Connection = connection,
+                    };
+                    
+                    if ( ClientConnectedCallback.IsCreated )
+                    {
+                        ClientConnectedCallback.Ptr.Invoke( ref args );
+                    }
+
+                    ClientConnectedWriter.Enqueue( args );
                 }
             }
         }
@@ -270,5 +299,26 @@ namespace SqualiveNetworking
 
     public static class NetworkServerEvent
     {
+        public static event ServerClientConnectedCallback ClientConnected;
+
+        private static NativeQueue<ServerClientConnectedArgs> _clientConnectedArgs;
+
+        internal static void Initialize()
+        {
+            _clientConnectedArgs = new NativeQueue<ServerClientConnectedArgs>( Allocator.Persistent );
+        }
+
+        internal static void DeInitialize()
+        {
+            _clientConnectedArgs.Dispose();
+        }
+
+        public static void ProcessEvents()
+        {
+            
+            
+        }
+
+        internal static NativeQueue<ServerClientConnectedArgs>.ParallelWriter GetClientConnectedWriter() => _clientConnectedArgs.AsParallelWriter();
     }
 }
