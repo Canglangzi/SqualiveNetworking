@@ -8,9 +8,9 @@ using Unity.Burst;
 #endif
 
 using System;
-using AOT;
 using SqualiveNetworking.Utils;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Error;
@@ -26,7 +26,14 @@ namespace SqualiveNetworking
         public NetworkConnection Connection;
     }
     
+    /// <summary>
+    /// This uses ref because burst function pointer only supports references or pointers
+    /// </summary>
     public delegate void ServerClientConnectedCallback( ref ServerClientConnectedArgs args );
+
+    public delegate void ServerStartedCallback( NetworkDriver driver );
+    
+    public delegate void ServerStoppedCallback(  );
     
     public static class NetworkServer
     {
@@ -93,8 +100,8 @@ namespace SqualiveNetworking
             _unreliablePipeline = _driver.CreatePipeline( typeof( UnreliableSequencedPipelineStage ) );
 
             _driver.Listen();
-            
-            NetworkServerEvent.Initialize();
+
+            NetworkServerEvent.Initialize( _driver );
 
             Debug.Log( $"[SERVER]: Start on port: {port}" );
         }
@@ -200,6 +207,7 @@ namespace SqualiveNetworking
 
             public PortableFunctionPointer<ServerClientConnectedCallback> ClientConnectedCallback;
 
+            [NativeDisableContainerSafetyRestriction]
             public NativeQueue<ServerClientConnectedArgs>.ParallelWriter ClientConnectedWriter;
             
             public void Execute()
@@ -299,24 +307,34 @@ namespace SqualiveNetworking
 
     public static class NetworkServerEvent
     {
+        public static event ServerStartedCallback ServerStarted;
+
+        public static event ServerStoppedCallback ServerStopped;
+        
         public static event ServerClientConnectedCallback ClientConnected;
 
         private static NativeQueue<ServerClientConnectedArgs> _clientConnectedArgs;
 
-        internal static void Initialize()
+        internal static void Initialize( NetworkDriver driver )
         {
             _clientConnectedArgs = new NativeQueue<ServerClientConnectedArgs>( Allocator.Persistent );
+
+            ServerStarted?.Invoke( driver );
         }
 
         internal static void DeInitialize()
         {
             _clientConnectedArgs.Dispose();
+            
+            ServerStopped?.Invoke();
         }
 
         public static void ProcessEvents()
         {
-            
-            
+            while ( _clientConnectedArgs.TryDequeue( out var args ) )
+            {
+                ClientConnected?.Invoke( ref args );
+            }
         }
 
         internal static NativeQueue<ServerClientConnectedArgs>.ParallelWriter GetClientConnectedWriter() => _clientConnectedArgs.AsParallelWriter();
