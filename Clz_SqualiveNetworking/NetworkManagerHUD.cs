@@ -60,8 +60,8 @@ public class NetworkManagerHUD : MonoBehaviour
             case NetworkState.Host:
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Stop Host"))
                 {
-                    networkManager.DisconnectClient();
-                    networkManager.StopServer();
+                  
+                    networkManager.StopHost();
                 }
                 break;
         }
