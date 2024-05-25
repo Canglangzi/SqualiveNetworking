@@ -24,7 +24,7 @@ public class NetworkManagerHUD : MonoBehaviour
 
         switch (networkManager.CurrentState)
         {
-            case NetworkManager.NetworkState.Disconnected:
+            case NetworkState.Disconnected:
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Host (Server + Client)"))
                 {
                     networkManager.StartHost();
@@ -33,7 +33,7 @@ public class NetworkManagerHUD : MonoBehaviour
 
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Connect as Client"))
                 {
-                    networkManager.ConnectToLocal();
+                    networkManager.ConnectClient();
                 }
                 ypos += spacing;
 
@@ -43,21 +43,21 @@ public class NetworkManagerHUD : MonoBehaviour
                 }
                 break;
 
-            case NetworkManager.NetworkState.Server:
+            case NetworkState.Server:
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Stop Server"))
                 {
                     networkManager.StopServer();
                 }
                 break;
 
-            case NetworkManager.NetworkState.Client:
+            case NetworkState.Client:
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Disconnect"))
                 {
                     networkManager.DisconnectClient();
                 }
                 break;
 
-            case NetworkManager.NetworkState.Host:
+            case NetworkState.Host:
                 if (GUI.Button(new Rect(xpos, ypos, 200, 20), "Stop Host"))
                 {
                     networkManager.DisconnectClient();

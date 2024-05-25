@@ -2,172 +2,250 @@
 using SqualiveNetworking.Message.Processor;
 using SqualiveNetworking.Tick;
 using SqualiveNetworking.Utils;
+using System;
 using Unity.Collections;
 using Unity.Networking.Transport;
 using UnityEngine;
+
+public enum NetworkState
+{
+    Disconnected,
+    Server,
+    Client,
+    Host
+}
+
 
 public class NetworkManager : MonoBehaviour
 {
     public static NetworkManager Instance { get; private set; }
 
-    public int MaxPlayers = 40;
-    public ushort Port = 27015;
-    public string ServerIP = "127.0.0.1";
-    public bool UseIPv6 = false;
+    public NetworkState CurrentState { get; protected set; }
 
-    public enum NetworkState
-    {
-        Disconnected,
-        Server,
-        Client,
-        Host
-    }
+    public bool useMessageLayer = false;
+    public int maxPlayer = 40;
+    public ushort port = 27015;
 
-    public NetworkState CurrentState { get; private set; } = NetworkState.Disconnected;
+    public float Tick = 60f;
 
-    private bool isServerRunning = false;
-    private bool isClientConnected = false;
+    [SerializeField]
+    private string ipAddress = "127.0.0.1"; // Default IP address
 
     private MessageProcessor ClientTickProcessor;
     private MessageProcessor ServerTickProcessor;
 
+    private bool isInitialized = false;
+    private bool isConnected = false;
+
     private void Awake()
     {
-        if (Instance != null && Instance != this)
+        if (Instance == null)
         {
+            Instance = this;
+        }
+        else
+        {
+            Debug.LogWarning("Multiple instances of NetworkManager found. Destroying duplicate.");
             Destroy(gameObject);
             return;
         }
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
-    }
 
-    private void Start()
-    {
-        SqualiveLogger.Initialize(Debug.Log);
-        TickManager.Instance.InitializeTickSystem();
-    }
-
-    public void StartServer()
-    {
-        if (!isServerRunning)
-        {
-            var networkSettings = new NetworkSettings(Allocator.Temp);
-            NetworkServer.Start(MaxPlayers, Port, UseIPv6, TickManager.Instance.TickSystem, networkSettings, new UDPNetworkInterface());
-            isServerRunning = true;
-            CurrentState = NetworkState.Server;
-            Debug.Log("Server started");
-
-            ServerTickProcessor = NetworkServer.CreateProcessor(new IMessageProcessorStage[] { new TickProcessorStage() });
-        }
-        else
-        {
-            Debug.LogWarning("Server is already running");
-        }
-    }
-
-    public void StopServer()
-    {
-        if (isServerRunning)
-        {
-            NetworkServer.Stop();
-            isServerRunning = false;
-            if (!isClientConnected)
-            {
-                CurrentState = NetworkState.Disconnected;
-            }
-            Debug.Log("Server stopped");
-        }
-        else
-        {
-            Debug.LogWarning("Server is not running");
-        }
-    }
-
-    public void ConnectClient(string ipAddress, ushort port)
-    {
-        if (!isClientConnected)
-        {
-            if (!NetworkClient.IsInitialized)
-            {
-                NetworkClient.Initialize(TickManager.Instance.TickSystem, new NetworkSettings(Allocator.Temp));
-            }
-            NetworkClient.Connect(ipAddress, port);
-            isClientConnected = true;
-            CurrentState = NetworkState.Client;
-            Debug.Log($"Client connected to {ipAddress}:{port}");
-
-            ClientTickProcessor = NetworkClient.CreateProcessor(new IMessageProcessorStage[] { new TickProcessorStage() });
-        }
-        else
-        {
-            Debug.LogWarning("Client is already connected");
-        }
-    }
-
-    public void ConnectToLocal()
-    {
-        ConnectClient("127.0.0.1", Port);
-    }
-
-    public void DisconnectClient()
-    {
-        if (isClientConnected)
-        {
-            NetworkClient.Disconnect();
-            isClientConnected = false;
-            if (!isServerRunning)
-            {
-                CurrentState = NetworkState.Disconnected;
-            }
-            Debug.Log("Client disconnected");
-        }
-        else
-        {
-            Debug.LogWarning("Client is not connected");
-        }
-    }
-
-    public void StartHost()
-    {
-        if (!isServerRunning)
-        {
-            StartServer();
-        }
-        if (!isClientConnected)
-        {
-            ConnectToLocal();
-        }
-        CurrentState = NetworkState.Host;
+        Debug.Log("NetworkManager Initialized.");
     }
 
     private void OnEnable()
     {
         NetworkServerEvent.ClientConnected += OnClientConnected;
-    }
+        NetworkServerEvent.ServerStarted += OnServerStarted;
+        NetworkServerEvent.ServerStopped += OnServerStopped;
+        NetworkClientEvent.ClientDisconnected += OnClientDisconnected;
+        NetworkClientEvent.ClientConnected += OnClientConnected;
 
+
+    }
     private void OnDisable()
     {
         NetworkServerEvent.ClientConnected -= OnClientConnected;
+        NetworkServerEvent.ServerStarted -= OnServerStarted;
+        NetworkServerEvent.ServerStopped -= OnServerStopped;
+        NetworkClientEvent.ClientDisconnected -= OnClientDisconnected;
+        NetworkClientEvent.ClientConnected -= OnClientConnected;
+
+    }
+    private void OnServerStopped()
+    {
+        Debug.Log("[Server] Server stopped.");
     }
 
-    private void OnClientConnected(ref ServerClientConnectedArgs args)
+    private void OnServerStarted(NetworkDriver driver)
     {
-        Debug.Log("Client connected to server");
+        Debug.Log("[Server] Server started.");
     }
 
-    private void OnDestroy()
+    private void OnClientConnected(ref ClientConnectedArgs args)
     {
-        SqualiveLogger.DeInitialize();
-        if (isServerRunning) NetworkServer.Stop();
-        if (isClientConnected) NetworkClient.DeInitialize();
+        Debug.Log("[Client] Connected to server. ID: " + args.ClientID + ", IsLocal: " + args.IsLocal);
+        isConnected = true;
+        CurrentState = NetworkState.Client;
     }
 
-    private void Update()
+    private void OnClientDisconnected(ref ClientDisconnectedArgs args)
     {
-        if (isServerRunning || isClientConnected)
+        Debug.LogWarning("[Client] Disconnected from server. Reason: " + args.Reason);
+        isConnected = false;
+        CurrentState = NetworkState.Disconnected;
+    }
+
+    protected virtual void OnClientConnected(ref ServerClientConnectedArgs args)
+    {
+        Debug.Log("[Server] Client connected to server. ID: " + args.ClientID);
+        
+        // 在这里执行针对新连接的操作，例如初始化客户端对象
+    }
+
+    public void ConnectClient()
+    {
+        Initialize();
+        bool connectionResult = NetworkClient.Connect(ipAddress, port);
+        if (connectionResult)
         {
-            TickManager.Instance.Tick(Time.deltaTime);
+            CurrentState = NetworkState.Client;
+           
+            Debug.Log("Client connected.");
+      
+        }
+        else
+        {
+            Debug.LogError("Failed to start connecting.");
+            DisconnectClient();
+        }
+    }
+
+ 
+
+    public void DisconnectClient()
+    {
+        NetworkClient.Disconnect();
+        DeInitialize();
+        CurrentState = NetworkState.Disconnected;
+        isConnected = false;
+        Debug.Log("Client disconnected.");
+    }
+
+    public void StartServer()
+    {
+        Initialize();
+        NetworkServer.Start(maxPlayer, port);
+        CurrentState = NetworkState.Server;
+        Debug.Log("Server started.");
+    }
+
+    public void StopServer()
+    {
+        NetworkServer.Stop();
+        DeInitialize();
+        CurrentState = NetworkState.Disconnected;
+        Debug.Log("Server stopped.");
+    }
+
+    public void StartHost()
+    {
+        if (CurrentState == NetworkState.Disconnected)
+        {
+            Initialize();
+            NetworkServer.Start(maxPlayer, port);
+            bool connectionResult = NetworkClient.Connect(ipAddress, port);
+            if (connectionResult)
+            {
+                CurrentState = NetworkState.Host;
+                Debug.Log("Host started.");
+
+            }
+            else
+            {
+                Debug.LogError("Failed to start host: unable to connect to server.");
+                DisconnectClient();
+            }
+        }
+    }
+
+    private void Initialize()
+    {
+        if (!isInitialized)
+        {
+            SqualiveLogger.Initialize(Debug.Log);
+
+            NetworkClient.Initialize(new TickSystem(true, (uint)Tick), new NetworkSettings(Allocator.Temp));
+
+            ClientTickProcessor = NetworkClient.CreateProcessor(new IMessageProcessorStage[] { new TickProcessorStage() });
+
+            if (useMessageLayer)
+            {
+                AddLayers();
+            }
+            else
+            {
+                AddMessageHandlers();
+            }
+
+            isInitialized = true;
+            Debug.Log("NetworkManager Initialized.");
+        }
+    }
+
+    private void DeInitialize()
+    {
+        if (isInitialized)
+        {
+            SqualiveLogger.DeInitialize();
+            NetworkClient.DeInitialize();
+            isInitialized = false;
+            Debug.Log("NetworkManager DeInitialized.");
+        }
+    }
+
+    private void AddLayers()
+    {
+        // Add your message layers logic here if needed
+        Debug.Log("Layers added.");
+    }
+
+    private void AddMessageHandlers()
+    {
+        // Add your message handlers logic here if needed
+        Debug.Log("Message handlers added.");
+    }
+
+    private void FixedUpdate()
+    {
+        if (CurrentState == NetworkState.Server || CurrentState == NetworkState.Host)
+        {
+            NetworkServer.Tick(Time.fixedDeltaTime);
+            Debug.Log("Server ticked.");
+        }
+
+        if (CurrentState == NetworkState.Client || CurrentState == NetworkState.Host)
+        {
+            NetworkClient.Tick(Time.fixedDeltaTime);
+            Debug.Log("Client ticked.");
+        }
+    }
+
+    private void OnGUI()
+    {
+        GUIStyle fontStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = 24,
+        };
+
+        GUILayout.Label($"Network State: {CurrentState}", fontStyle);
+        GUILayout.Label($"Server Tick: {NetworkServer.CurrentTick}", fontStyle);
+        GUILayout.Label($"Client Tick: {NetworkClient.CurrentTick}", fontStyle);
+
+        if (GUILayout.Button("Close GUI"))
+        {
+            gameObject.SetActive(false);
+            Debug.Log("GUI closed.");
         }
     }
 }

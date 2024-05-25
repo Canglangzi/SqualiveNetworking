@@ -49,12 +49,14 @@ namespace SqualiveNetworking
     
     public delegate void ServerStoppedCallback(  );
     
-    public static unsafe class NetworkServer
+    public static class NetworkServer
     {
+        public static bool Initialized => _driver.IsCreated && _initialized && _connectionsMap.IsCreated;
+        
         private static NetworkDriver _driver;
 
         private static NativeParallelHashMap<ushort, NetworkConnection> _connectionsMap;
- public static bool IsInitialized => _initialized;
+
         private static NativeNetworkMessageHandlers _internalHandlers;
         
         private static NativeNetworkMessageHandlers _customHandlers;
@@ -291,9 +293,9 @@ namespace SqualiveNetworking
 
             var map = _connectionsMap.GetValueArray( Allocator.Temp );
 
-            for ( int i = 0; i < map.Length; i++ )
+            foreach ( var pair in _connectionsMap.AsReadOnly() )
             {
-                SendMessage( sendType, messageProcessor, netMessage, map[ i ] );
+                SendMessage( sendType, messageProcessor, netMessage, pair.Value );
             }
 
             map.Dispose();
@@ -452,7 +454,7 @@ namespace SqualiveNetworking
 #if ENABLE_SQUALIVE_NET_BURST
         [BurstCompile]
 #endif
-        private struct ServerUpdateJob : IJob
+        private unsafe struct ServerUpdateJob : IJob
         {
             public NetworkDriver.Concurrent Driver;
 
@@ -494,24 +496,25 @@ namespace SqualiveNetworking
                                 var disconnectReason = (DisconnectReason)stream.ReadByte();
                                 
     #if ENABLE_SQUALIVE_NET_DEBUG
-                                switch ( disconnectReason )
-                                {
-                                    case DisconnectReason.Timeout:
-                                        Debug.Log( $"[SERVER]: Client {pair.Key} Timed out" );
-                                        break;
-                                    case DisconnectReason.ProtocolError:
-                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Protocol error )" );
-                                        break;
-                                    case DisconnectReason.ClosedByRemote:
-                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Closed by remote )" );
-                                        break;
-                                    case DisconnectReason.MaxConnectionAttempts:
-                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Connection attempts failed )" );
-                                        break;
-                                    default:
-                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ({(byte)disconnectReason})" );
-                                        break;
-                                }
+                                // switch ( disconnectReason )
+                                // {
+                                //     case DisconnectReason.Timeout:
+                                //         Debug.Log( $"[SERVER]: Client {pair.Key} Timed out" );
+                                //         break;
+                                //     case DisconnectReason.ProtocolError:
+                                //         Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Protocol error )" );
+                                //         break;
+                                //     case DisconnectReason.ClosedByRemote:
+                                //         Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Closed by remote )" );
+                                //         break;
+                                //     case DisconnectReason.MaxConnectionAttempts:
+                                //         Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Connection attempts failed )" );
+                                //         break;
+                                //     default:
+                                //         Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ({(byte)disconnectReason})" );
+                                //         break;
+                                // }
+                                Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected {disconnectReason.ToFixedString()}" );
     #endif
                                 // Trigger client disconnected here
                                 var args = new ServerClientDisconnectedArgs

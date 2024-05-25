@@ -19,11 +19,9 @@ namespace SqualiveNetworking
         Reliable,
         
         Frag,
-        
-        Notify,
     }
 
-    public unsafe struct MessageReceivedArgs
+    public struct MessageReceivedArgs
     {
         public ushort ClientID;
         
@@ -37,10 +35,10 @@ namespace SqualiveNetworking
 
         public MessageProcessor Processor;
 
-        public void* ProcessorOutputPtr;
+        public unsafe void* ProcessorOutputPtr;
     }
 
-    public unsafe struct MessageReceivedPtr
+    internal unsafe struct MessageReceivedPtr
     {
         public MessageReceivedArgs Args;
 
@@ -55,9 +53,9 @@ namespace SqualiveNetworking
     
     public interface INetMessage
     {
-        void Serialize( ref Unity.Collections.DataStreamWriter writer );
+        void Serialize( ref DataStreamWriter writer );
 
-        void Deserialize( ref Unity.Collections.DataStreamReader reader );
+        void Deserialize( ref DataStreamReader reader );
         
         ushort MessageID();
     }

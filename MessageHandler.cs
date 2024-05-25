@@ -8,7 +8,6 @@ using System.Collections.Generic;
 using SqualiveNetworking.Utils;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
-using UnityEngine;
 
 namespace SqualiveNetworking
 {

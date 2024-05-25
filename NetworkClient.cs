@@ -39,9 +39,12 @@ namespace SqualiveNetworking
 
     public delegate void ClientConnectedCallback( ref ClientConnectedArgs args );
     
-    public static unsafe class NetworkClient
+    public static class NetworkClient
     {
+        public static bool Initialized => _driver.IsCreated && _initialized && _connections.IsCreated;
+        
         private static NetworkDriver _driver;
+
         private static NativeArray<NetworkConnection> _connections;
 
         private static NetworkConnection Connection => _connections[ 0 ];
@@ -49,7 +52,7 @@ namespace SqualiveNetworking
         private static NativeNetworkMessageHandlers _internalHandlers;
         
         private static NativeNetworkMessageHandlers _customHandlers;
- public static bool IsInitialized => _initialized;
+
         private static NetworkPipeline _fragmentationPipeline, _reliablePipeline, _unreliablePipeline;
 
         private static JobHandle _clientJobHandle;
@@ -80,7 +83,7 @@ namespace SqualiveNetworking
         private class ClientIDKey { }
         private class TickKey { }
         
-        private static bool EnsureInitialized()
+        public static bool EnsureInitialized()
         {
             if ( !_initialized )
             {
@@ -93,7 +96,7 @@ namespace SqualiveNetworking
             return true;
         }
 
-        private static bool EnsureUnInitialized()
+        public static bool EnsureUnInitialized()
         {
             if ( _initialized )
             {
@@ -106,7 +109,7 @@ namespace SqualiveNetworking
             return true;
         }
 
-        public static void Initialize( TickSystem tickSystem, NetworkSettings settings )
+        public static void Initialize( TickSystem tickSystem, NetworkSettings settings, int connectionTimeoutMS = 1000, int maxConnectAttempts = 5 )
         {
             if ( !EnsureUnInitialized() )
                 return;
@@ -116,6 +119,8 @@ namespace SqualiveNetworking
             TickSystem.Data = tickSystem;
 
             SharedClientID.Data = 0;
+
+            settings = settings.WithNetworkConfigParameters( 1000, 5 );
 
             _driver = NetworkDriver.Create( settings );
 
@@ -140,6 +145,10 @@ namespace SqualiveNetworking
 
             NetworkClientEvent.Initialize(  );
         }
+
+        public static void Initialize( TickSystem tickSystem, int connectionTimeoutMS = 1000,
+            int maxConnectAttempts = 5 ) => Initialize( tickSystem, new NetworkSettings( Allocator.Temp ),
+            connectionTimeoutMS, maxConnectAttempts );
 
         public static void DeInitialize()
         {
@@ -166,20 +175,22 @@ namespace SqualiveNetworking
             NetworkClientEvent.DeInitialize();
         }
 
-        public static void Connect( string ipAddress, ushort port = 27015, NetworkFamily networkFamily = NetworkFamily.Ipv4 )
+        public static bool Connect( string ipAddress, ushort port = 27015, NetworkFamily networkFamily = NetworkFamily.Ipv4 )
         {
             if ( !EnsureInitialized() )
-                return;
+                return false;
             
             var endPoint = NetworkEndpoint.Parse( ipAddress, port, networkFamily );
 
             _connections[0] = _driver.Connect( endPoint );
+
+            return Connection != default;
         }
 
-        public static void ConnectToLocal( ushort port = 27015, bool ipv6 = false )
+        public static bool ConnectToLocal( ushort port = 27015, bool ipv6 = false )
         {
             if ( !EnsureInitialized() )
-                return;
+                return false;
             
             _clientJobHandle.Complete();
 
@@ -188,6 +199,8 @@ namespace SqualiveNetworking
             endPoint = endPoint.WithPort( port );
 
             _connections[ 0 ] = _driver.Connect( endPoint );
+
+            return Connection != default;
         }
 
         public static void Disconnect()
@@ -200,6 +213,8 @@ namespace SqualiveNetworking
             _clientJobHandle.Complete();
             
             Connection.Disconnect( _driver );
+            
+            _driver.ScheduleUpdate().Complete();
 
 #if ENABLE_SQUALIVE_NET_DEBUG
             Debug.Log( "[CLIENT]: Disconnecting from server...." );
@@ -297,7 +312,7 @@ namespace SqualiveNetworking
 #if ENABLE_SQUALIVE_NET_BURST
         [BurstCompile]
 #endif
-        internal struct ClientUpdateJob : IJob
+        internal unsafe struct ClientUpdateJob : IJob
         {
             public NetworkDriver Driver;
             
@@ -350,7 +365,9 @@ namespace SqualiveNetworking
                             var reason = (DisconnectReason)stream.ReadByte();
                             
 #if ENABLE_SQUALIVE_NET_DEBUG
-                            Debug.Log( $"[CLIENT]: Disconnected from {Driver.GetRemoteEndpoint( Connections[ 0 ] ).ToFixedString()}" );
+
+                            Debug.Log(
+                                $"[CLIENT]: Disconnected from {Driver.GetRemoteEndpoint( Connections[ 0 ] ).ToFixedString()} {reason.ToFixedString()}" );
 #endif
 
                             var args = new ClientDisconnectedArgs

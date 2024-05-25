@@ -29,12 +29,12 @@ public class TickManager : MonoBehaviour
     {
         if (TickSystem.Update(ref deltaTime))
         {
-            if (NetworkServer.IsInitialized)
+            if (NetworkServer.Initialized)
             {
                 NetworkServer.Tick(deltaTime);
             }
 
-            if (NetworkClient.IsInitialized)
+            if (NetworkClient.Initialized)
             {
                 NetworkClient.Tick(deltaTime);
             }

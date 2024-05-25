@@ -104,7 +104,7 @@ namespace SqualiveNetworking.Message.Processor
             
             var isServer = _id == 1;
 
-            for ( int i = processor.EndIndex - 1; i >= processor.StartIndex; i-- )
+            for ( int i = processor.StartIndex; i < processor.EndIndex; i++ )
             {
                 var stage = _stages[ i ];
 

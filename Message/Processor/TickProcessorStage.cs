@@ -39,7 +39,7 @@ namespace SqualiveNetworking.Message.Processor
             var currentTick = stream.ReadUInt();
 
             output = UnsafeUtility.Malloc( UnsafeUtility.SizeOf<uint>(), UnsafeUtility.AlignOf<uint>(), Allocator.Temp );
-
+            
             *(uint*)output = currentTick;
         }
     }

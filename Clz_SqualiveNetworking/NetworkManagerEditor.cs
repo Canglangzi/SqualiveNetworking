@@ -4,7 +4,7 @@ using UnityEngine;
 [CustomEditor(typeof(NetworkManager))]
 public class NetworkManagerEditor : Editor
 {
-    public override void OnInspectorGUI()
+   public override void OnInspectorGUI()
     {
         NetworkManager networkManager = (NetworkManager)target;
         
@@ -16,21 +16,21 @@ public class NetworkManagerEditor : Editor
         // Control buttons
         switch (networkManager.CurrentState)
         {
-            case NetworkManager.NetworkState.Disconnected:
+            case NetworkState.Disconnected:
               
                 if (GUILayout.Button("Start Server"))
                 {
                     networkManager.StartServer();
                 }
                 break;
-            case NetworkManager.NetworkState.Server:
+            case NetworkState.Server:
               
                 if (GUILayout.Button("Stop Server"))
                 {
                     networkManager.StopServer();
                 }
                 break;
-            case NetworkManager.NetworkState.Client:
+            case NetworkState.Client:
               
                 if (GUILayout.Button("Disconnect Client"))
                 {
@@ -42,18 +42,18 @@ public class NetworkManagerEditor : Editor
         GUILayout.Space(10);
         
        
-        if (networkManager.CurrentState == NetworkManager.NetworkState.Disconnected || networkManager.CurrentState == NetworkManager.NetworkState.Server)
+        if (networkManager.CurrentState == NetworkState.Disconnected || networkManager.CurrentState == NetworkState.Server)
         {
             if (GUILayout.Button("Connect"))
             {
-                networkManager.ConnectToLocal();
+                networkManager.ConnectClient();
             }
         }
         
         GUILayout.Space(10);
         
       
-        if (networkManager.CurrentState == NetworkManager.NetworkState.Disconnected)
+        if (networkManager.CurrentState == NetworkState.Disconnected)
         {
             if (GUILayout.Button("Start Host"))
             {

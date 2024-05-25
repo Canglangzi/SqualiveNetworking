@@ -1,6 +1,7 @@
 ﻿using SqualiveNetworking.Message.Processor;
 using Unity.Collections;
 using Unity.Networking.Transport;
+using Unity.Networking.Transport.Error;
 using UnityEngine;
 
 namespace SqualiveNetworking
@@ -88,6 +89,25 @@ namespace SqualiveNetworking
             writer.WriteByte( 1 );
             
             return writer;
+        }
+
+        public static FixedString32Bytes ToFixedString( this DisconnectReason reason )
+        {
+            switch ( reason )
+            {
+                case DisconnectReason.Timeout:
+                    return "( Timed Out )";
+                case DisconnectReason.AuthenticationFailure:
+                    return "( Auth Error )";
+                case DisconnectReason.ClosedByRemote:
+                    return "( Closed By Remote )";
+                case DisconnectReason.ProtocolError:
+                    return "( Protocol Error )";
+                case DisconnectReason.MaxConnectionAttempts:
+                    return "( Connection Attempts Failed )";
+                default:
+                    return "( Default )";
+            }
         }
     }
 }
