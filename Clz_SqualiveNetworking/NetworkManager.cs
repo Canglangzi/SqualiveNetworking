@@ -92,7 +92,7 @@ public class NetworkManager : MonoBehaviour
             SceneManager.LoadScene(offlineScene);
         }
 
-        CurrentState = NetworkState.Disconnected;
+     
     }
 
     private void OnServerStarted(NetworkDriver driver)
@@ -104,7 +104,7 @@ public class NetworkManager : MonoBehaviour
             SceneManager.LoadScene(onlineScene);
         }
 
-        CurrentState = NetworkState.Server;
+   
     }
 
     private void OnClientConnected(ref ClientConnectedArgs args)
@@ -113,7 +113,7 @@ public class NetworkManager : MonoBehaviour
 
         Debug.Log("[Client] Connected to server. ID: " + args.ClientID + ", IsLocal: " + args.IsLocal);
         isConnected = true;
-        CurrentState = NetworkState.Client;
+   
         if (loadScenes)
         {
             SceneManager.LoadScene(onlineScene);
@@ -202,11 +202,12 @@ public class NetworkManager : MonoBehaviour
         }
 
         Initialize();
-        NetworkServer.Start(maxPlayer, port);
+        NetworkServer.Start(maxPlayer, port); //确保启动服务器
+        CurrentState = NetworkState.Host;
         bool connectionResult = NetworkClient.Connect(ipAddress, port);
         if (connectionResult)
         {
-            CurrentState = NetworkState.Host;
+      
             Debug.Log("Host started.");
             if (loadScenes)
             {
@@ -275,20 +276,34 @@ public class NetworkManager : MonoBehaviour
     {
   
     }
-
     private void FixedUpdate()
     {
-
-        if (CurrentState == NetworkState.Server || CurrentState == NetworkState.Host)
+        switch (CurrentState)
         {
-            NetworkServer.Tick(Time.fixedDeltaTime);
-        }
+            case NetworkState.Server:
+                NetworkServer.Tick(Time.fixedDeltaTime);
+                break;
 
-        if (CurrentState == NetworkState.Client || CurrentState == NetworkState.Host)
-        {
-            NetworkClient.Tick(Time.fixedDeltaTime);
+            case NetworkState.Client:
+                NetworkClient.Tick(Time.fixedDeltaTime);
+                break;
+
+            case NetworkState.Host:
+                NetworkClient.Tick(Time.fixedDeltaTime);
+                NetworkServer.Tick(Time.fixedDeltaTime);
+                Debug.Log("Host ticked.");
+                break;
+
+            case NetworkState.Disconnected:
+              
+                break;
+
+            default:
+                Debug.LogError("Unhandled network state.");
+                break;
         }
     }
+
     private void OnGUI()
     {
         GUIStyle fontStyle = new GUIStyle(GUI.skin.label)
