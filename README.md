@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
+
 =======
 # Clz_SqualiveNetworking SqualiveNetworking
 
