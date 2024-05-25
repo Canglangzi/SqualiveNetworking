@@ -3,11 +3,12 @@
 // For additional information please see the included LICENSE.md file or view it on GitHub:
 // https://github.com/Squalive/SqualiveNetworking
 
-#if ENABLE_SQUALIVE_NET_BURST
 using Unity.Burst;
-#endif
-
 using System;
+using SqualiveNetworking.Message;
+using SqualiveNetworking.Message.Handler;
+using SqualiveNetworking.Message.Processor;
+using SqualiveNetworking.Tick;
 using SqualiveNetworking.Utils;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -21,8 +22,19 @@ namespace SqualiveNetworking
 {
     public struct ServerClientConnectedArgs
     {
+        public ushort ClientID;
+        
         public NetworkDriver Driver;
 
+        public NetworkConnection Connection;
+    }
+
+    public struct ServerClientDisconnectedArgs
+    {
+        public ushort ClientID;
+        
+        public DisconnectReason Reason;
+        
         public NetworkConnection Connection;
     }
     
@@ -31,15 +43,21 @@ namespace SqualiveNetworking
     /// </summary>
     public delegate void ServerClientConnectedCallback( ref ServerClientConnectedArgs args );
 
+    public delegate void ServerClientDisconnectedCallback( ref ServerClientDisconnectedArgs args );
+
     public delegate void ServerStartedCallback( NetworkDriver driver );
     
     public delegate void ServerStoppedCallback(  );
     
-    public static class NetworkServer
+    public static unsafe class NetworkServer
     {
         private static NetworkDriver _driver;
 
-        private static NativeList<NetworkConnection> _connections;
+        private static NativeParallelHashMap<ushort, NetworkConnection> _connectionsMap;
+ public static bool IsInitialized => _initialized;
+        private static NativeNetworkMessageHandlers _internalHandlers;
+        
+        private static NativeNetworkMessageHandlers _customHandlers;
 
         private static NetworkPipeline _fragmentationPipeline, _reliablePipeline, _unreliablePipeline;
 
@@ -49,7 +67,23 @@ namespace SqualiveNetworking
 
         private static PortableFunctionPointer<ServerClientConnectedCallback> _clientConnectedPtr;
         
-        private static bool EnsureInitialized()
+        private static PortableFunctionPointer<ServerClientDisconnectedCallback> _clientDisconnectedPtr;
+
+        private static PortableFunctionPointer<MessageReceivedCallback> _messageReceivedPtr;
+
+        private static MessageProcessorHandler _messageProcessorHandler;
+
+        private static NativeHashMap<byte, MessageProcessor> _processors;
+
+        private static int _maxPlayer;
+        
+        internal static readonly SharedStatic<TickSystem> TickSystem = SharedStatic<TickSystem>.GetOrCreate<TickKey>(  );
+
+        public static uint CurrentTick => TickSystem.Data.CurrentTick;
+        
+        private class TickKey { }
+        
+        public static bool EnsureInitialized()
         {
             if ( !_initialized || !_driver.IsCreated )
             {
@@ -62,7 +96,7 @@ namespace SqualiveNetworking
             return true;
         }
 
-        private static bool EnsureUnInitialized()
+        public static bool EnsureUnInitialized()
         {
             if ( _initialized || _driver.IsCreated )
             {
@@ -78,51 +112,95 @@ namespace SqualiveNetworking
         /// <summary>
         /// This uses the default baselib interface
         /// </summary>
-        public static void Start( int maxPlayer, ushort port, bool isIpv6, NetworkSettings settings )
+        public static void Start<T>( int maxPlayer, ushort port, bool isIpv6, TickSystem tickSystem, NetworkSettings settings, T networkInterface ) where T : unmanaged, INetworkInterface
         {
             if ( !EnsureUnInitialized() )
                 return;
 
             _initialized = true;
+
+            _maxPlayer = maxPlayer;
+            TickSystem.Data = tickSystem;
             
-            _driver = NetworkDriver.Create( settings );
-            _connections = new NativeList<NetworkConnection>( maxPlayer, Allocator.Persistent );
+            _driver = NetworkDriver.Create( networkInterface, settings );
+            _connectionsMap = new NativeParallelHashMap<ushort, NetworkConnection>( maxPlayer, Allocator.Persistent );
+            
+            _internalHandlers = new NativeNetworkMessageHandlers( Allocator.Persistent );
+            _customHandlers = new NativeNetworkMessageHandlers( Allocator.Persistent );
 
             var endpoint = isIpv6 ? NetworkEndpoint.AnyIpv6.WithPort( port ) : NetworkEndpoint.AnyIpv4.WithPort( port );
 
             if ( _driver.Bind( endpoint ) != 0 )
             {
+#if ENABLE_SQUALIVE_NET_DEBUG
                 Debug.LogError(  $"[SERVER]: Failed to bind to port {port}" );
+#endif
             }
 
-            _fragmentationPipeline = _driver.CreatePipeline( typeof( FragmentationPipelineStage ) );
+            _fragmentationPipeline = _driver.CreatePipeline( typeof( FragmentationPipelineStage ), typeof( ReliableSequencedPipelineStage ) );
             _reliablePipeline = _driver.CreatePipeline( typeof( ReliableSequencedPipelineStage ) );
             _unreliablePipeline = _driver.CreatePipeline( typeof( UnreliableSequencedPipelineStage ) );
+
+            _messageProcessorHandler = new MessageProcessorHandler( 1, Allocator.Persistent );
+            _processors = new NativeHashMap<byte, MessageProcessor>( 32, Allocator.Persistent );
 
             _driver.Listen();
 
             NetworkServerEvent.Initialize( _driver );
 
+#if ENABLE_SQUALIVE_NET_DEBUG
             Debug.Log( $"[SERVER]: Start on port: {port}" );
+#endif
         }
+
+        public static void Start( int maxPlayer, ushort port, TickSystem tickSystem, NetworkSettings settings ) =>
+            Start( maxPlayer, port, false, tickSystem, settings, new UDPNetworkInterface() );
+
+        /// <summary>
+        /// Start with tickrate 50
+        /// </summary>
+        /// <param name="maxPlayer"></param>
+        /// <param name="port"></param>
+        /// <param name="settings"></param>
+        public static void Start( int maxPlayer, ushort port, NetworkSettings settings ) =>
+            Start( maxPlayer, port, false, new TickSystem( true, 50 ), settings, new UDPNetworkInterface() );
+
+        /// <summary>
+        /// Start with tickrate 50
+        /// </summary>
+        /// <param name="maxPlayer"></param>
+        /// <param name="port"></param>
+        public static void Start( int maxPlayer, ushort port ) =>
+            Start( maxPlayer, port, false, new TickSystem( true, 50 ), new NetworkSettings( Allocator.Temp ), new UDPNetworkInterface() );
 
         public static void Stop()
         {
             if ( !EnsureInitialized() )
                 return;
-
+            
             _initialized = false;
             
             _serverJobHandle.Complete();
             
+            _internalHandlers.Dispose();
+            _customHandlers.Dispose();
+            
             _driver.Dispose();
-            _connections.Dispose();
+            _connectionsMap.Dispose();
+            
+            _messageProcessorHandler.Dispose();
+            _processors.Dispose();
             
             NetworkServerEvent.DeInitialize();
-
+            
+#if ENABLE_SQUALIVE_NET_DEBUG
             Debug.Log( "[SERVER]: Disposing server...." );
+#endif
         }
 
+        /// <summary>
+        /// Force a update
+        /// </summary>
         public static void Update()
         {
             if ( !EnsureInitialized() )
@@ -134,8 +212,10 @@ namespace SqualiveNetworking
 
             var connectionJob = new ServerUpdateConnectionJob
             {
+                MaxPlayer = _maxPlayer,
                 Driver = _driver,
-                Connections = _connections,
+                Connections = _connectionsMap,
+                ReliablePipeline = _reliablePipeline,
                 ClientConnectedCallback = _clientConnectedPtr,
                 ClientConnectedWriter = NetworkServerEvent.GetClientConnectedWriter(),
             };
@@ -143,57 +223,135 @@ namespace SqualiveNetworking
             var updateJob = new ServerUpdateJob
             {
                 Driver = _driver.ToConcurrent(),
-                Connections = _connections.AsDeferredJobArray(),
+                Connections = _connectionsMap,
+                ClientDisconnectedCallback = _clientDisconnectedPtr,
+                ClientDisconnectedArgsWriter = NetworkServerEvent.GetClientDisconnectedWriter(),
+                MessageReceivedCallback = _messageReceivedPtr,
+                MessageReceivedArgsWriter = NetworkServerEvent.GetMessageReceivedWriter(),
+                InternalMessageLayers = _internalHandlers.GetReadOnlyLayers(),
+                CustomMessageLayers = _customHandlers.GetReadOnlyLayers(),
+                MessageProcessorHandler = _messageProcessorHandler,
+                Processors = _processors.AsReadOnly(),
             };
 
             _serverJobHandle = _driver.ScheduleUpdate();
 
             _serverJobHandle = connectionJob.Schedule( _serverJobHandle );
 
-            _serverJobHandle = updateJob.Schedule( _connections, 1 , _serverJobHandle );
+            _serverJobHandle = updateJob.Schedule( _serverJobHandle );
         }
-        
-        internal static bool BeginSendUnreliable( int clientID, out DataStreamWriter writer, int requiredPayloadSize = 0 )
-        {
-            int status = _driver.BeginSend( _unreliablePipeline, _connections[ clientID ], out writer, requiredPayloadSize );
 
-            if ( status != 0 )
+        /// <summary>
+        /// using the internal tick system to perform update at a appropriate time
+        /// </summary>
+        /// <param name="deltaTime">times in between frames</param>
+        public static void Tick( float deltaTime )
+        {
+            while ( TickSystem.Data.Update( ref deltaTime ) )
             {
-#if ENABLE_SQUALIVE_NET_DEBUG
-                Debug.Log( $"[SERVER]: Failed to begin send message, status code: {status}" );
-#endif
-                return false;
+                Update();
             }
-
-            return true;
         }
 
-        internal static void EndSend( DataStreamWriter writer )
+        public static void SendMessage<T>( SendType sendType, T netMessage, ushort clientID ) where T : unmanaged, INetMessage
         {
-            _driver.EndSend( writer );
+            SendMessage( sendType, MessageProcessor.Null, netMessage, clientID );
         }
 
-        public static void SendMessage<T>( SendType sendType, T netMessage, int clientID ) where T : unmanaged, INetMessage
+        public static void SendMessage<T>( SendType sendType, MessageProcessor messageProcessor, T netMessage, ushort clientID ) where T : unmanaged, INetMessage
+        {
+            var connection = _connectionsMap[ clientID ];
+
+            SendMessage( sendType, messageProcessor, netMessage, connection );
+        }
+
+        private static void SendMessage<T>( SendType sendType, MessageProcessor messageProcessor, T netMessage, NetworkConnection connection ) where T : unmanaged, INetMessage
         {
             DataStreamWriter writer;
             
             switch ( sendType )
             {
+                case SendType.Reliable:
+                    if ( !NetworkHelper.BeginSend( _driver, _reliablePipeline, _messageProcessorHandler, messageProcessor, connection, out writer ) ) return;
+                    break;
+                case SendType.Frag:
+                    if ( !NetworkHelper.BeginSend( _driver, _fragmentationPipeline, _messageProcessorHandler, messageProcessor, connection, out writer ) ) return;
+                    break;
                 default:
-                    if ( !BeginSendUnreliable( clientID, out writer ) ) return;
+                    if ( !NetworkHelper.BeginSend( _driver, _unreliablePipeline, _messageProcessorHandler, messageProcessor, connection, out writer ) ) return;
                     break;
             }
 
-            writer.WriteUShort( netMessage.MessageID );
-
-            netMessage.Serialize( ref writer );
-
-            EndSend( writer );
+            NetworkHelper.SendCustomMessage( netMessage, _driver, ref writer );
         }
 
+        public static void SendMessageToAll<T>( SendType sendType, MessageProcessor messageProcessor, T netMessage ) where T : unmanaged, INetMessage
+        {
+            _serverJobHandle.Complete();
+
+            var map = _connectionsMap.GetValueArray( Allocator.Temp );
+
+            for ( int i = 0; i < map.Length; i++ )
+            {
+                SendMessage( sendType, messageProcessor, netMessage, map[ i ] );
+            }
+
+            map.Dispose();
+        }
+
+        public static void SendMessageToAll<T>( SendType sendType, MessageProcessor messageProcessor, T netMessage, ushort exceptID ) where T : unmanaged, INetMessage
+        {
+            _serverJobHandle.Complete();
+            
+            var map = _connectionsMap.GetKeyValueArrays( Allocator.Temp );
+
+            for ( int i = 0; i < map.Length; i++ )
+            {
+                if ( map.Keys[ i ] != exceptID )
+                    SendMessage( sendType, messageProcessor, netMessage, map.Values[ i ] );
+            }
+
+            map.Dispose();
+        }
+
+        public static void SendMessageToAll<T>( SendType sendType, T netMessage ) where T : unmanaged, INetMessage
+        {
+            SendMessageToAll( sendType, MessageProcessor.Null,  netMessage );
+        }
+
+        public static void SendMessageToAll<T>( SendType sendType, T netMessage, ushort exceptID )
+            where T : unmanaged, INetMessage
+        {
+            SendMessageToAll( sendType, MessageProcessor.Null,  netMessage, exceptID );
+        }
+        
         public static void SetClientConnectedFunctionPtr( ServerClientConnectedCallback clientConnectedCallback )
         {
             _clientConnectedPtr = new PortableFunctionPointer<ServerClientConnectedCallback>( clientConnectedCallback );
+        }
+
+        public static void SetClientConnectedFunctionPtr( ServerClientDisconnectedCallback clientDisconnectedCallback )
+        {
+            _clientDisconnectedPtr = new PortableFunctionPointer<ServerClientDisconnectedCallback>( clientDisconnectedCallback );
+        }
+
+        public static void SetMessageReceivedFunctionPtr( MessageReceivedCallback callback )
+        {
+            _messageReceivedPtr = new PortableFunctionPointer<MessageReceivedCallback>( callback );
+        }
+
+        public static void AddNativeMessageHandler<T>( T layer ) where T : unmanaged, INativeMessageHandler
+        {
+            _customHandlers.AddLayer( layer );
+        }
+
+        public static MessageProcessor CreateProcessor<T> ( T[] processorInterface ) where T :  IMessageProcessorStage
+        {
+            var processor = _messageProcessorHandler.CreateProcessor( processorInterface );
+
+            _processors.TryAdd( processor.InternalID, processor );
+
+            return processor;
         }
 
 #if ENABLE_SQUALIVE_NET_BURST
@@ -201,41 +359,58 @@ namespace SqualiveNetworking
 #endif
         private struct ServerUpdateConnectionJob : IJob
         {
+            public int MaxPlayer;
+            
             public NetworkDriver Driver;
 
-            public NativeList<NetworkConnection> Connections;
+            public NativeParallelHashMap<ushort, NetworkConnection> Connections;
 
             public PortableFunctionPointer<ServerClientConnectedCallback> ClientConnectedCallback;
 
             [NativeDisableContainerSafetyRestriction]
             public NativeQueue<ServerClientConnectedArgs>.ParallelWriter ClientConnectedWriter;
+
+            public NetworkPipeline ReliablePipeline;
             
             public void Execute()
             {
                 // Clean up connections.
-                for ( int i = 0; i < Connections.Length; i++ )
+                var connections = Connections.GetKeyValueArrays( Allocator.Temp );
+
+                for ( int i = 0; i < connections.Length; i++ )
                 {
-                    if ( !Connections[i].IsCreated )
+                    if ( !connections.Values[ i ].IsCreated )
                     {
-                        Connections.RemoveAtSwapBack( i );
-                        i--;
+                        Connections.Remove( connections.Keys[ i ] );
                     }
                 }
+
+                connections.Dispose();
                 
                 NetworkConnection connection;
                 
                 while ( ( connection = Driver.Accept() ) != default )
                 {
-                    Connections.Add( connection );
+                    var id = GetNewID();
+
+                    // This means the server has already maxed out
+                    if ( id == 0 )
+                    {
+                        Driver.Disconnect( connection );
+                        continue;
+                    }
+                    
+                    Connections.Add( id, connection );
 
                     var endPoint = Driver.GetRemoteEndpoint( connection );
                     
 #if ENABLE_SQUALIVE_NET_DEBUG
-                    Debug.Log( $"[SERVER]: Accepting New Connection From: {endPoint.ToFixedString()}" );
+                    Debug.Log( $"[SERVER]: Accepting New Connection({id}) From: {endPoint.ToFixedString()}" );
 #endif
                     // Trigger client connected here
                     var args = new ServerClientConnectedArgs
                     {
+                        ClientID = id,
                         Driver = Driver,
                         Connection = connection,
                     };
@@ -246,59 +421,187 @@ namespace SqualiveNetworking
                     }
 
                     ClientConnectedWriter.Enqueue( args );
+
+                    foreach ( var pair in Connections )
+                    {
+                        if ( !NetworkHelper.BeginSend( Driver, ReliablePipeline, MessageProcessorHandler.Null, MessageProcessor.Null, pair.Value, out var writer, 0 ) ) continue;
+
+                        NetworkHelper.SendInternalMessage( new ClientConnectedMessage
+                        {
+                            ClientID = id,
+                            IsLocal = pair.Key == id,
+                        }, Driver, ref writer );
+                    }
                 }
+            }
+
+            private ushort GetNewID()
+            {
+                for ( ushort i = 1; i <= MaxPlayer; i++ )
+                {
+                    if ( !Connections.ContainsKey( i ) )
+                    {
+                        return i;
+                    }
+                }
+
+                return 0;
             }
         }
 
 #if ENABLE_SQUALIVE_NET_BURST
         [BurstCompile]
 #endif
-        private struct ServerUpdateJob : IJobParallelForDefer
+        private struct ServerUpdateJob : IJob
         {
             public NetworkDriver.Concurrent Driver;
 
-            public NativeArray<NetworkConnection> Connections;
-            
-            public void Execute( int index )
-            {
-                NetworkEvent.Type cmd;
+            public NativeParallelHashMap<ushort, NetworkConnection> Connections;
 
-                var connection = Connections[ index ];
-                
-                while ( ( cmd = Driver.PopEventForConnection( connection, out var stream ) ) != NetworkEvent.Type.Empty )
+            // Use for triggering client disconnect function ptr
+            public PortableFunctionPointer<ServerClientDisconnectedCallback> ClientDisconnectedCallback;
+
+            [NativeDisableContainerSafetyRestriction]
+            public NativeQueue<ServerClientDisconnectedArgs>.ParallelWriter ClientDisconnectedArgsWriter;
+
+            // Use for triggering message received function ptr
+            public PortableFunctionPointer<MessageReceivedCallback> MessageReceivedCallback;
+
+            [NativeDisableContainerSafetyRestriction]
+            public NativeQueue<MessageReceivedPtr>.ParallelWriter MessageReceivedArgsWriter;
+
+            public NativeArray<NativeMessageHandler>.ReadOnly InternalMessageLayers;
+            
+            public NativeArray<NativeMessageHandler>.ReadOnly CustomMessageLayers;
+
+            public MessageProcessorHandler MessageProcessorHandler;
+
+            public NativeHashMap<byte, MessageProcessor>.ReadOnly Processors;
+            
+            public void Execute()
+            {
+                foreach ( var pair in Connections )
                 {
-                    switch ( cmd )
+                    NetworkEvent.Type cmd;
+                    
+                    while ( ( cmd = Driver.PopEventForConnection( pair.Value, out var stream ) ) != NetworkEvent.Type.Empty )
                     {
-                        case NetworkEvent.Type.Disconnect:
-                            Connections[ index ] = default;
-                            
-                            var disconnectReason = (DisconnectReason)stream.ReadByte();
-                            
-#if ENABLE_SQUALIVE_NET_DEBUG
-                            switch ( disconnectReason )
-                            {
-                                case DisconnectReason.Timeout:
-                                    Debug.Log( $"[SERVER]: Client {index} Timed out" );
-                                    break;
-                                case DisconnectReason.ProtocolError:
-                                    Debug.Log( $"[SERVER]: Client {index} Disconnected ( Protocol error )" );
-                                    break;
-                                case DisconnectReason.ClosedByRemote:
-                                    Debug.Log( $"[SERVER]: Client {index} Disconnected ( Closed by remote )" );
-                                    break;
-                                case DisconnectReason.MaxConnectionAttempts:
-                                    Debug.Log( $"[SERVER]: Client {index} Disconnected ( Connection attempts failed )" );
-                                    break;
-                                default:
-                                    Debug.Log( $"[SERVER]: Client {index} Disconnected ({(byte)disconnectReason})" );
-                                    break;
-                            }
-#endif
-                            // TODO: Trigger client disconnected here
-                            break;
-                        case NetworkEvent.Type.Data:
-                            // TODO: Trigger message handler here
-                            break;
+                        switch ( cmd )
+                        {
+                            case NetworkEvent.Type.Disconnect:
+                                pair.Value = default;
+                                
+                                var disconnectReason = (DisconnectReason)stream.ReadByte();
+                                
+    #if ENABLE_SQUALIVE_NET_DEBUG
+                                switch ( disconnectReason )
+                                {
+                                    case DisconnectReason.Timeout:
+                                        Debug.Log( $"[SERVER]: Client {pair.Key} Timed out" );
+                                        break;
+                                    case DisconnectReason.ProtocolError:
+                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Protocol error )" );
+                                        break;
+                                    case DisconnectReason.ClosedByRemote:
+                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Closed by remote )" );
+                                        break;
+                                    case DisconnectReason.MaxConnectionAttempts:
+                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ( Connection attempts failed )" );
+                                        break;
+                                    default:
+                                        Debug.Log( $"[SERVER]: Client {pair.Key} Disconnected ({(byte)disconnectReason})" );
+                                        break;
+                                }
+    #endif
+                                // Trigger client disconnected here
+                                var args = new ServerClientDisconnectedArgs
+                                {
+                                    ClientID = pair.Key,
+                                    Reason = disconnectReason,
+                                    Connection = pair.Value,
+                                };
+                                
+                                ClientDisconnectedArgsWriter.Enqueue( args );
+
+                                if ( ClientDisconnectedCallback.IsCreated )
+                                {
+                                    ClientDisconnectedCallback.Ptr.Invoke( ref args );
+                                }
+                                break;
+                            case NetworkEvent.Type.Data:
+                                var streamPtr = stream.GetUnsafeReadOnlyPtr();
+                                var streamLength = stream.Length;
+                                
+                                var processorInternalID = stream.ReadByte();
+
+                                var processor = MessageProcessor.Null;
+                                byte hasProcessorOutput = 0;
+                                void* processorOutput = default;
+
+                                if ( processorInternalID > 0 && Processors.TryGetValue( processorInternalID, out processor ) )
+                                {
+                                    hasProcessorOutput = MessageProcessorHandler.ProcessRead( processor, ref stream, out processorOutput ) ? StreamExtensions.True : StreamExtensions.False;
+                                }
+                                
+                                var type = stream.ReadByte();
+                                
+                                var messageID = stream.ReadUShort();
+
+                                var ptr = UnsafeUtility.AddressOf( ref this );
+                                
+                                // Trigger message handler here
+                                var messageReceivedArgs = new MessageReceivedArgs
+                                {
+                                    ClientID = pair.Key,
+                                    Connection = pair.Value,
+                                    MessageID = messageID,
+                                    Stream = stream,
+                                    Processor = processor,
+                                    HasProcessorOutput = hasProcessorOutput,
+                                    ProcessorOutputPtr = processorOutput,
+                                };
+
+                                switch ( type )
+                                {
+                                    case 0:
+                                        ProcessMessageLayers( ref messageReceivedArgs, ref InternalMessageLayers, ptr );
+                                        break;
+                                    // Custom Message
+                                    case 1:
+                                        var messageReceivedPtr = new MessageReceivedPtr
+                                        {
+                                            Args = messageReceivedArgs,
+                                            StreamPtr = streamPtr,
+                                            Length = streamLength,
+                                            BytesRead = stream.GetBytesRead(),
+                                        };
+
+                                        MessageReceivedArgsWriter.Enqueue( messageReceivedPtr );
+                                
+                                        if ( MessageReceivedCallback.IsCreated )
+                                        {
+                                            MessageReceivedCallback.Ptr.Invoke( ref messageReceivedArgs );
+                                        }
+                                        
+                                        ProcessMessageLayers( ref messageReceivedArgs, ref CustomMessageLayers, ptr );
+                                        break;
+                                }
+                                
+                                break;
+                        }
+                    }
+                }
+            }
+
+            private void ProcessMessageLayers( ref MessageReceivedArgs args, ref NativeArray<NativeMessageHandler>.ReadOnly layers, void* ptr )
+            {
+                for ( int i = 0; i < layers.Length; i++ )
+                {
+                    var layer = layers[ i ];
+
+                    if ( layer.IsCreated && layer.CompatibleMessageID == args.MessageID )
+                    {
+                        layer.ProcessFunction.Ptr.Invoke( ref args, ptr );
                     }
                 }
             }
@@ -312,12 +615,27 @@ namespace SqualiveNetworking
         public static event ServerStoppedCallback ServerStopped;
         
         public static event ServerClientConnectedCallback ClientConnected;
+        
+        public static event ServerClientDisconnectedCallback ClientDisconnected;
+
+        public static MessageReceivedCallback MessageReceived
+        {
+            get => _messageHandler.MessageReceived;
+            set => _messageHandler.MessageReceived = value;
+        } 
 
         private static NativeQueue<ServerClientConnectedArgs> _clientConnectedArgs;
+        
+        private static NativeQueue<ServerClientDisconnectedArgs> _clientDisconnectedArgs;
+
+        private static MessageHandler _messageHandler;
 
         internal static void Initialize( NetworkDriver driver )
         {
             _clientConnectedArgs = new NativeQueue<ServerClientConnectedArgs>( Allocator.Persistent );
+            _clientDisconnectedArgs = new NativeQueue<ServerClientDisconnectedArgs>( Allocator.Persistent );
+
+            _messageHandler = new MessageHandler( "SERVER", Allocator.Persistent );
 
             ServerStarted?.Invoke( driver );
         }
@@ -325,18 +643,37 @@ namespace SqualiveNetworking
         internal static void DeInitialize()
         {
             _clientConnectedArgs.Dispose();
+            _clientDisconnectedArgs.Dispose();
+            
+            _messageHandler.Dispose();
             
             ServerStopped?.Invoke();
         }
 
-        public static void ProcessEvents()
+        internal static void ProcessEvents()
         {
             while ( _clientConnectedArgs.TryDequeue( out var args ) )
             {
                 ClientConnected?.Invoke( ref args );
             }
+            
+            while ( _clientDisconnectedArgs.TryDequeue( out var args ) )
+            {
+                ClientDisconnected?.Invoke( ref args );
+            }
+            
+            _messageHandler.Update();
+        }
+
+        public static void AddManagedReceivedCallback( ushort messageID, MessageReceivedCallback receivedCallback )
+        {
+            _messageHandler.AddManagedReceivedCallback( messageID, receivedCallback );
         }
 
         internal static NativeQueue<ServerClientConnectedArgs>.ParallelWriter GetClientConnectedWriter() => _clientConnectedArgs.AsParallelWriter();
+        
+        internal static NativeQueue<ServerClientDisconnectedArgs>.ParallelWriter GetClientDisconnectedWriter() => _clientDisconnectedArgs.AsParallelWriter();
+        
+        internal static NativeQueue<MessageReceivedPtr>.ParallelWriter GetMessageReceivedWriter() => _messageHandler.AsParallelWriter();
     }
 }

@@ -4,6 +4,9 @@
 // https://github.com/Squalive/SqualiveNetworking
 
 
+using SqualiveNetworking.Message.Processor;
+using Unity.Collections;
+using Unity.Networking.Transport;
 
 namespace SqualiveNetworking
 {
@@ -19,13 +22,43 @@ namespace SqualiveNetworking
         
         Notify,
     }
+
+    public unsafe struct MessageReceivedArgs
+    {
+        public ushort ClientID;
+        
+        public NetworkConnection Connection;
+
+        public ushort MessageID;
+
+        public DataStreamReader Stream;
+
+        public byte HasProcessorOutput;
+
+        public MessageProcessor Processor;
+
+        public void* ProcessorOutputPtr;
+    }
+
+    public unsafe struct MessageReceivedPtr
+    {
+        public MessageReceivedArgs Args;
+
+        public void* StreamPtr;
+
+        public int Length;
+
+        public int BytesRead;
+    }
+
+    public delegate void MessageReceivedCallback( ref MessageReceivedArgs args );
     
     public interface INetMessage
     {
-        ushort MessageID { get; }
-
         void Serialize( ref Unity.Collections.DataStreamWriter writer );
 
         void Deserialize( ref Unity.Collections.DataStreamReader reader );
+        
+        ushort MessageID();
     }
 }
